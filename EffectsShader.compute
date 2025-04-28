@@ -1,0 +1,96 @@
+// Each #kernel tells which function to compile; you can have many kernels
+#pragma kernel ApplyTint
+#pragma kernel ApplyHair
+
+// Create a RenderTexture with enableRandomWrite flag and set it
+// with cs.SetTexture
+RWTexture2D<float4> _Result;
+float4 _Tint;
+float4 _Boots;
+float4 _Accent;
+float4 _Highlight;
+float4 _Hair;
+
+float Epsilon = 1e-10;
+ 
+float3 RGBtoHCV(in float3 RGB)
+  {
+    // Based on work by Sam Hocevar and Emil Persson
+    float4 P = (RGB.g < RGB.b) ? float4(RGB.bg, -1.0, 2.0/3.0) : float4(RGB.gb, 0.0, -1.0/3.0);
+    float4 Q = (RGB.r < P.x) ? float4(P.xyw, RGB.r) : float4(RGB.r, P.yzx);
+    float C = Q.x - min(Q.w, Q.y);
+    float H = abs((Q.w - Q.y) / (6 * C + Epsilon) + Q.z);
+    return float3(H, C, Q.x);
+  }//uhhhhhh yeah this is some voodoo magic
+
+float3 RGBtoHSV(in float3 RGB)
+  {
+    float3 HCV = RGBtoHCV(RGB);
+    float S = HCV.y / (HCV.z + Epsilon);
+    return float3(HCV.x, S, HCV.z);
+  }
+
+float3 HUEtoRGB(in float H)
+  {
+    float R = abs(H * 6 - 3) - 1;
+    float G = 2 - abs(H * 6 - 2);
+    float B = 2 - abs(H * 6 - 4);
+    return saturate(float3(R,G,B));
+  }
+
+float3 HSVtoRGB(in float3 HSV)
+  {
+    float3 RGB = HUEtoRGB(HSV.x);
+    return ((RGB - 1) * HSV.y + 1) * HSV.z;
+  }
+
+
+
+
+[numthreads(8,8,1)]
+void ApplyTint (uint3 id : SV_DispatchThreadID)
+{
+    // TODO: insert actual code here!
+    float3 HSV = RGBtoHSV(_Result[id.xy].xyz);
+
+    float dist = min(distance(HSV.x,0),distance(HSV.x,1));
+
+    float dist2 = distance(HSV.x,.6);
+    if(HSV.y>0.1965){
+        _Result[id.xy] = lerp(_Result[id.xy],_Tint,clamp(1-dist*8,0,1));
+    }
+    if(HSV.y>.25&&dist2<0.1){
+        _Result[id.xy] = lerp(_Result[id.xy],_Accent,clamp(1-dist2*3,0.0,1.0));
+    }
+    if(HSV.y<0.19){
+        _Result[id.xy] = _Highlight;
+    }
+
+    
+  
+    // float distance1 = distance(HSV.x,0);
+    // float distance2 = distance(HSV.x,1);
+
+    // if(HSV.y>.15){
+    //     if((distance1<0.1)){
+    //         _Result[id.xy]=float4(HSVtoRGB(float3(lerp(_TintHSV.x,HSV.x,distance1*5),lerp(_TintHSV.y,HSV.y,distance(_TintHSV.y,HSV.y)),lerp(_TintHSV.z,HSV.z,distance(_TintHSV.z,HSV.z)))),1);
+    //     }else if(distance2<0.1){
+    //         _Result[id.xy]=float4(HSVtoRGB(float3(lerp(_TintHSV.x,HSV.x,distance2*5),lerp(_TintHSV.y,HSV.y,distance(_TintHSV.y,HSV.y)),lerp(_TintHSV.z,HSV.z,distance(_TintHSV.z,HSV.z)))),1);
+    //     }
+    // }
+
+    // if(_Result[id.xy].x>.75&&_Result[id.xy].y<.6&&_Result[id.xy].z<.6){
+    //     _Result[id.xy] = lerp(_Result[id.xy],_Tint,.9);
+    // }
+}
+
+
+[numthreads(8,8,1)]
+void ApplyHair (uint3 id : SV_DispatchThreadID)
+{
+    float3 HSV = RGBtoHSV(_Result[id.xy].xyz);
+
+    float dist = distance(HSV.z,.3);
+
+    _Result[id.xy] = lerp(float4(0,0,0,0),_Hair,1-dist*1.5);
+}
