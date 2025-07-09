@@ -29,6 +29,9 @@ public class NetworkTest
         On.Landfall.Haste.NGOPlayer.OnNetworkSpawn += (orig, self) =>
         {
             orig(self);
+            if (!self.IsOwner)
+                return;
+            
             CustomMessagingManager msgManager = NetworkManager.Singleton.CustomMessagingManager;
 
             msgManager.RegisterNamedMessageHandler("TestPing", PingCallBack);
@@ -37,8 +40,9 @@ public class NetworkTest
 
     private static void PingCallBack(ulong clientId, FastBufferReader reader)
     {
+        // Debug.Log("Ping Call Back");
         string msg;
-        reader.ReadValue(out msg);
+        reader.ReadValueSafe(out msg);
         Debug.Log($"Ping Recieved from: {clientId} with Message: {msg}");
     }
 
@@ -46,7 +50,8 @@ public class NetworkTest
     public static void PingServer()
     {
         string msg = $"I am id: {NetworkManager.Singleton.LocalClientId} sending ping";
-        using FastBufferWriter writer = new FastBufferWriter(2 + Encoding.UTF8.GetByteCount(msg) + 16, Unity.Collections.Allocator.Temp);
+        using FastBufferWriter writer = new FastBufferWriter(FastBufferWriter.GetWriteSize(msg), Unity.Collections.Allocator.Temp);
+        writer.WriteValueSafe(msg);
         NetworkHackManager.ForceSendMessage("TestPing", 0, writer);
     }
 
@@ -55,7 +60,8 @@ public class NetworkTest
     public static void PingAll()
     {
         string msg = $"I am id: {NetworkManager.Singleton.LocalClientId} sending ping";
-        using FastBufferWriter writer = new FastBufferWriter(2 + Encoding.UTF8.GetByteCount(msg) + 16, Unity.Collections.Allocator.Temp);
+        using FastBufferWriter writer = new FastBufferWriter(FastBufferWriter.GetWriteSize(msg), Unity.Collections.Allocator.Temp);
+        writer.WriteValueSafe(msg);
         NetworkHackManager.ForceSendMessageToAll("TestPing", writer);
     }
     [ConsoleCommand]

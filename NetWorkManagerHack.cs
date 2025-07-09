@@ -16,6 +16,8 @@ using Unity.Netcode;
 using Zorro.Core;
 using UnityEngine.Events;
 using System.Text;
+using MonoMod;
+using MonoMod.RuntimeDetour;
 
 
 
@@ -47,114 +49,130 @@ public static class NetworkHackManager
 
     public static void Init()
     {
+      //HOLY FUCK ITS ALL REFLECTION I HATE IT OMG
 
 
-        On.Unity.Netcode.CustomMessagingManager.SendNamedMessage_string_ulong_FastBufferWriter_NetworkDelivery += (self, orig, name, id, buffer, networkDelivery) =>
-        {
-            // self.ValidateMessageSize(messageStream, networkDelivery, true); -- ehhhhhhh prolly not important
-            ulong hash = 0;
-            switch (NetworkManager.Singleton.NetworkConfig.RpcHashSize)
-            {
-                case HashSize.VarIntFourBytes:
-                    hash = (ulong)name.Hash32();
-                    break;
-                case HashSize.VarIntEightBytes:
-                    hash = name.Hash64();
-                    break;
-            }
-            Debug.LogWarning("Hash Size Calculated");
+      Type messageManagerType = typeof(NetworkManager).Assembly.GetType("Unity.Netcode.NetworkMessageManager");
+      MethodInfo canSendMethod = messageManagerType.GetMethod("CanSend", BindingFlags.NonPublic| BindingFlags.Instance);
 
-            if (NetworkManager.Singleton.IsHost && (long)id == (long)NetworkManager.Singleton.LocalClientId)//Checks if we are host or sending message to ourselves if we are invoke the message locally -- we can allow this and it shouldn't? cause problems later
-            {
-                //Need to System.Reflection this prolly?
-                Debug.LogWarning("Are host or are sending message to ourself");
-                MethodInfo InvokeNamedMessageReflection = self.GetType().GetMethod("InvokeNamedMessage", BindingFlags.NonPublic | BindingFlags.Instance);
-                InvokeNamedMessageReflection.Invoke(self, new object[] { hash, NetworkManager.Singleton.LocalClientId, new FastBufferReader(buffer, Unity.Collections.Allocator.None), 0 });
-            }
-            else
-            {
-                var asm = typeof(NetworkManager).Assembly;
-                var namedMessageType = asm.GetType("Unity.Netcode.NamedMessage");
-                if (namedMessageType == null)
-                {
-                    throw new Exception("NamedMessage type not found! D:");
-                }
+      Hook hook = new Hook(canSendMethod,
+          (Func<object, ulong, Type, NetworkDelivery, bool>)((self, targetClientId, messageType, delivery) =>
+          {
+            // Debug.LogWarning("Forcing Custom CanSend logic to: "+(ForcedServer||NetworkManager.Singleton.IsServer||targetClientId==0)); so apparently this gets checked every frame but uh trust me it works (atleast i think)
+            //Actually not sure if this step is needed as Im getting blocked in the network transport anyways, would need to do more testing to verify
+            //Might back out here tho - modifying NetworkTransports seems a little difficult
+            return ForcedServer || NetworkManager.Singleton.IsServer || targetClientId == 0;
+          })
+      );
+        
+      On.Unity.Netcode.CustomMessagingManager.SendNamedMessage_string_ulong_FastBufferWriter_NetworkDelivery += (self, orig, name, id, buffer, networkDelivery) =>
+      {
+        // self.ValidateMessageSize(messageStream, networkDelivery, true); -- ehhhhhhh prolly not important
+          
 
-                Debug.LogWarning("Found NamedMessageType");
+        
 
-                var message = Activator.CreateInstance(namedMessageType, nonPublic: true);
-                namedMessageType.GetField("Hash").SetValue(message, hash);
-                namedMessageType.GetField("SendData").SetValue(message, buffer);
+          ulong hash = 0;
+          switch (NetworkManager.Singleton.NetworkConfig.RpcHashSize)
+          {
+              case HashSize.VarIntFourBytes:
+                  hash = (ulong)name.Hash32();
+                  break;
+              case HashSize.VarIntEightBytes:
+                  hash = name.Hash64();
+                  break;
+          }
+          Debug.LogWarning("Hash Size Calculated");
 
-                Debug.LogWarning("NamedMessage Fields Set");
+          if (NetworkManager.Singleton.IsHost && (long)id == (long)NetworkManager.Singleton.LocalClientId)//Checks if we are host or sending message to ourselves if we are invoke the message locally -- we can allow this and it shouldn't? cause problems later
+          {
+              
+              Debug.LogWarning("Are host or are sending message to ourself");
+              MethodInfo InvokeNamedMessageReflection = self.GetType().GetMethod("InvokeNamedMessage", BindingFlags.NonPublic | BindingFlags.Instance);
+              InvokeNamedMessageReflection.Invoke(self, new object[] { hash, NetworkManager.Singleton.LocalClientId, new FastBufferReader(buffer, Unity.Collections.Allocator.None), 0 });
+          }
+          else
+          {
+              var asm = typeof(NetworkManager).Assembly;
+              var namedMessageType = asm.GetType("Unity.Netcode.NamedMessage");
+              if (namedMessageType == null)
+              {
+                  throw new Exception("NamedMessage type not found! D:");
+              }
 
-                //HOLY REFLECTIONS BRO LIKE GIVE ME A BREAKKKKKKKKK
-                NetworkConnectionManager connectionManager = typeof(NetworkManager).GetField("ConnectionManager", BindingFlags.NonPublic|BindingFlags.Instance).GetValue(NetworkManager.Singleton) as NetworkConnectionManager;
-                Debug.LogWarning("NetworkConnectionManager Found");
-                var SendMessageMethods = connectionManager.GetType()
-                    .GetMethods(BindingFlags.NonPublic | BindingFlags.Instance)
-                    .Where(m => m.Name == "SendMessage" && m.IsGenericMethod);
-                
-                Debug.LogWarning("SendMessageMethods Found");
-                var targetSendMessageMethod = SendMessageMethods.FirstOrDefault(m =>
-                {
-                    var parameters = m.GetParameters();
-                    return parameters.Length == 3
-                        && parameters[0].ParameterType.IsByRef
-                        && parameters[1].ParameterType == typeof(NetworkDelivery)
-                        && parameters[2].ParameterType == typeof(ulong);
-                });
+              Debug.LogWarning("Found NamedMessageType");
 
-                if (targetSendMessageMethod == null)
-                    throw new Exception("Correct SendMessage<T> overload not found");
+              var message = Activator.CreateInstance(namedMessageType, nonPublic: true);
+              namedMessageType.GetField("Hash").SetValue(message, hash);
+              namedMessageType.GetField("SendData").SetValue(message, buffer);
 
-                Debug.LogWarning("Correct SendMessage<T> has been found");
+              Debug.LogWarning("NamedMessage Fields Set");
 
-                var genericSendMessageMethod = targetSendMessageMethod.MakeGenericMethod(namedMessageType);
+              //HOLY REFLECTIONS BRO LIKE GIVE ME A BREAKKKKKKKKK
+              NetworkConnectionManager connectionManager = typeof(NetworkManager).GetField("ConnectionManager", BindingFlags.NonPublic|BindingFlags.Instance).GetValue(NetworkManager.Singleton) as NetworkConnectionManager;
+              Debug.LogWarning("NetworkConnectionManager Found");
+              var SendMessageMethods = connectionManager.GetType()
+                  .GetMethods(BindingFlags.NonPublic | BindingFlags.Instance)
+                  .Where(m => m.Name == "SendMessage" && m.IsGenericMethod);
+              
+              Debug.LogWarning("SendMessageMethods Found");
+              var targetSendMessageMethod = SendMessageMethods.FirstOrDefault(m =>
+              {
+                  var parameters = m.GetParameters();
+                  return parameters.Length == 3
+                      && parameters[0].ParameterType.IsByRef
+                      && parameters[1].ParameterType == typeof(NetworkDelivery)
+                      && parameters[2].ParameterType == typeof(ulong);
+              });
 
-                if (ForcedServer)
-                {
-                    //Escalate Permissions
-                    typeof(NetworkClient).GetProperty("IsServer", BindingFlags.NonPublic|BindingFlags.Instance).SetValue(connectionManager.GetType().GetField("LocalClient", BindingFlags.NonPublic|BindingFlags.Instance).GetValue(connectionManager), true);
-                    Debug.LogWarning("Escalated NetworkClient Permissions");
-                }
+              if (targetSendMessageMethod == null)
+                  throw new Exception("Correct SendMessage<T> overload not found");
 
-                int bytesCount = (int)genericSendMessageMethod.Invoke(connectionManager, new object[] { message, networkDelivery, id });
+              Debug.LogWarning("Correct SendMessage<T> has been found");
 
-                Debug.LogWarning("Sent Message");
+              var genericSendMessageMethod = targetSendMessageMethod.MakeGenericMethod(namedMessageType);
 
-                if (bytesCount == 0)
-                    return;
-                var INetworkMetricsType = asm.GetType("Unity.Netcode.INetworkMetrics");
+              if (ForcedServer)
+              {
+                  //Escalate Permissions
+                  typeof(NetworkClient).GetProperty("IsServer", BindingFlags.NonPublic|BindingFlags.Instance).SetValue(connectionManager.GetType().GetField("LocalClient", BindingFlags.NonPublic|BindingFlags.Instance).GetValue(connectionManager), true);
+                  Debug.LogWarning("Escalated NetworkClient Permissions");
+              }
 
-                Debug.LogWarning("Found INetworkMetricsType");
+              int bytesCount = (int)genericSendMessageMethod.Invoke(connectionManager, new object[] { message, networkDelivery, id });
 
-                var trackNamedMessageMethods = INetworkMetricsType.GetMethods(BindingFlags.Public | BindingFlags.Instance).Where(m => m.Name == "TrackNamedMessageSent");
+              Debug.LogWarning("Sent Message");
 
-                Debug.LogWarning("Found trackNamedMessage Methods");
+              if (bytesCount == 0)
+                  return;
+              var INetworkMetricsType = asm.GetType("Unity.Netcode.INetworkMetrics");
 
-                var targetTrackNamedMessageMethod = trackNamedMessageMethods.FirstOrDefault(m =>
-                {
-                    var parameters = m.GetParameters();
-                    return parameters.Length == 3 && parameters[0].ParameterType == typeof(ulong);
-                });
+              Debug.LogWarning("Found INetworkMetricsType");
 
-                Debug.LogWarning("Found target trackNamedMessage Method");
-                var networkMetricsManager = typeof(NetworkManager).GetField("MetricsManager", BindingFlags.NonPublic | BindingFlags.Instance).GetValue(NetworkManager.Singleton);
-                Debug.LogWarning("Invoking: " + targetTrackNamedMessageMethod + " id: "+id+" name: "+name+" byteCount: "+bytesCount+" NetworkMetricsManager: "+networkMetricsManager);
-                targetTrackNamedMessageMethod.Invoke(networkMetricsManager.GetType().GetProperty("NetworkMetrics", BindingFlags.NonPublic|BindingFlags.Instance).GetValue(networkMetricsManager), new object[] { id, name, (long)bytesCount });
-                Debug.LogWarning("Tracking Message");
-                if (ForcedServer)
-                {
-                    //De-Escalate Permissions
-                    typeof(NetworkClient).GetProperty("IsServer", BindingFlags.NonPublic|BindingFlags.Instance).SetValue(connectionManager.GetType().GetField("LocalClient", BindingFlags.NonPublic|BindingFlags.Instance).GetValue(connectionManager), false);
-                    Debug.LogWarning("De-Escalated NetworkClient Permissions");
-                }
-            }
-        };
+              var trackNamedMessageMethods = INetworkMetricsType.GetMethods(BindingFlags.Public | BindingFlags.Instance).Where(m => m.Name == "TrackNamedMessageSent");
+
+              Debug.LogWarning("Found trackNamedMessage Methods");
+
+              var targetTrackNamedMessageMethod = trackNamedMessageMethods.FirstOrDefault(m =>
+              {
+                  var parameters = m.GetParameters();
+                  return parameters.Length == 3 && parameters[0].ParameterType == typeof(ulong);
+              });
+
+              Debug.LogWarning("Found target trackNamedMessage Method");
+              var networkMetricsManager = typeof(NetworkManager).GetField("MetricsManager", BindingFlags.NonPublic | BindingFlags.Instance).GetValue(NetworkManager.Singleton);
+              Debug.LogWarning("Invoking: " + targetTrackNamedMessageMethod + " id: "+id+" name: "+name+" byteCount: "+bytesCount+" NetworkMetricsManager: "+networkMetricsManager);
+              targetTrackNamedMessageMethod.Invoke(networkMetricsManager.GetType().GetProperty("NetworkMetrics", BindingFlags.NonPublic|BindingFlags.Instance).GetValue(networkMetricsManager), new object[] { id, name, (long)bytesCount });
+              Debug.LogWarning("Tracking Message");
+              if (ForcedServer)
+              {
+                  //De-Escalate Permissions
+                  typeof(NetworkClient).GetProperty("IsServer", BindingFlags.NonPublic|BindingFlags.Instance).SetValue(connectionManager.GetType().GetField("LocalClient", BindingFlags.NonPublic|BindingFlags.Instance).GetValue(connectionManager), false);
+                  Debug.LogWarning("De-Escalated NetworkClient Permissions");
+              }
+          }
+      };
     }
-
-
 
 
 
@@ -162,7 +180,7 @@ public static class NetworkHackManager
 
 }
 
-//Just yoinking the unity.netcode hash functions cause I cant be bothered to system.reflections my way in there
+//Just yoinking the unity.netcode XXHash functions cause I cant be bothered to system.reflections my way in there
 static class XXHash
 {
   
